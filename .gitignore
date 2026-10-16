@@ -1,0 +1,6 @@
+*.pdf
+*.pyc
+/slurm/*
+.venv/*
+.venv/
+__pycache__/
