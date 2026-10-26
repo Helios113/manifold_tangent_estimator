@@ -4,3 +4,13 @@
 .venv/*
 .venv/
 __pycache__/
+known_test_verification/logs/
+
+# training outputs
+results/
+results_backup_pre_rerun/
+logs/*
+!logs/.gitkeep
+*.pt
+checkpoints/
+.pytest_cache/

@@ -13,25 +13,19 @@ class LDLE:
         self.k_tune = min(k_tune or max(2, k // 2), k)
         self.chi = float(chi2.ppf(p_chi, d)); self.tau, self.delta = tau, delta
 
-    def fit(self, X, nn=None, cache=None):
+    def fit(self, X, nn=None):
         n, p = X.shape
         self.X, self.n, self.p = X, n, p
         kk = max(self.k, self.klv)
         dist, idx = nn if nn is not None else knn_train(X, kk)
         self.nn = (dist[:, :kk], idx[:, :kk])
         N = min(self.N, n - 2); self.N_eff = N
-        key = ("ldle", self.k, self.k_tune, N)
-        if cache is not None and key in cache:
-            sigma, evals, Phi = cache[key]
-        else:
-            K, sigma = self_tuned_dense(dist[:, : self.k], idx[:, : self.k], self.k_tune, n)
-            L = torch.diag(K.sum(1)) - K
-            del K
-            w, V = smallest_eigs(L, N + 1)
-            del L
-            evals, Phi = w[1:], V[:, 1:]                              # drop the constant eigenvector
-            if cache is not None:
-                cache[key] = (sigma, evals, Phi)
+        K, sigma = self_tuned_dense(dist[:, : self.k], idx[:, : self.k], self.k_tune, n)
+        L = torch.diag(K.sum(1)) - K
+        del K
+        w, V = smallest_eigs(L, N + 1)
+        del L
+        evals, Phi = w[1:], V[:, 1:]                                  # drop the constant eigenvector
         self.sigma, self.evals, self.Phi = sigma, evals, Phi
         return self
 
@@ -85,12 +79,12 @@ class LDLE:
             out[s] = self._tangent(self.X[s], self.Phi[s], dist[s], idx[s])
         return out
 
-    def tangents_query(self, Y, cache=None):
+    def tangents_query(self, Y):
         """LDLE as published only yields tangents for the points of the cloud it is run on: new points are appended to
         the cloud and the whole method is rerun. Returns the tangents of the new points."""
         m = LDLE(self.d, k=self.k, klv=self.klv, N=self.N, k_tune=self.k_tune)
         m.chi, m.tau, m.delta = self.chi, self.tau, self.delta
-        m.fit(torch.cat([self.X, Y]), cache=cache)
+        m.fit(torch.cat([self.X, Y]))
         return m.tangents_train()[-len(Y):]
 
     def state_nbytes(self):

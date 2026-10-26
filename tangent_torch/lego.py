@@ -14,7 +14,7 @@ class LEGO:
         self.d, self.k, self.m, self.m0, self.beta = d, k, m, m0, beta
         self.k_tune = min(k_tune or max(2, k // 2), k)
 
-    def fit(self, X, nn=None, cache=None):
+    def fit(self, X, nn=None):
         n, p = X.shape
         m0 = min(self.m0, n - 1); m = min(self.m, m0 - 1)
         self.n, self.p, self.m_eff = n, p, m
@@ -27,20 +27,12 @@ class LEGO:
         dist, idx = dist[:, : self.k], idx[:, : self.k]
         dist_s = dist * self.scale
 
-        key = ("lego", self.k, self.k_tune)
-        if cache is not None and key in cache and cache[key][2].shape[1] >= m0:
-            sigma, mu, psi = cache[key]
-        else:
-            m0c = m0 if cache is None else max(m0, min(120, n - 1))       # grid sweeps share one eigendecomposition
-            K, sigma = self_tuned_dense(dist_s, idx, self.k_tune, n)
-            deg = K.sum(1); dm = deg.rsqrt()
-            K.mul_(dm[:, None]).mul_(dm[None, :])                  # normalised adjacency S = D^-1/2 K D^-1/2
-            mu, U = smallest_eigs(K, m0c, largest=True)            # largest mu = smallest Laplacian eigenvalue
-            psi = U * dm[:, None]
-            del K, U
-            if cache is not None:
-                cache[key] = (sigma, mu, psi)
-        mu, psi = mu[:m0], psi[:, :m0]
+        K, sigma = self_tuned_dense(dist_s, idx, self.k_tune, n)
+        deg = K.sum(1); dm = deg.rsqrt()
+        K.mul_(dm[:, None]).mul_(dm[None, :])                      # normalised adjacency S = D^-1/2 K D^-1/2
+        mu, U = smallest_eigs(K, m0, largest=True)                 # largest mu = smallest Laplacian eigenvalue
+        psi = U * dm[:, None]
+        del K, U
         self.sigma, self.mu, self.Phi = sigma, mu, psi
         self.evals = 1 - mu
         self.UPhi, self.R = torch.linalg.qr(self.Phi)
@@ -75,11 +67,14 @@ class LEGO:
             out[s] = self._tangent_from_UPhi(self.UPhi[s])
         return out
 
-    def tangents_query(self, Y, cache=None):
+    def tangents_at(self, ids):
+        return self._tangent_from_UPhi(self.UPhi[ids])
+
+    def tangents_query(self, Y):
         """LEGO as published only yields tangents for the points of the cloud it is run on: new points are appended to
         the cloud and the whole method is rerun. Returns the tangents of the new points."""
         m = LEGO(self.d, k=self.k, m=self.m, m0=self.m0, beta=self.beta, k_tune=self.k_tune)
-        m.fit(torch.cat([self.X, Y]), cache=cache)
+        m.fit(torch.cat([self.X, Y]))
         return m.tangents_train()[-len(Y):]
 
     def state_nbytes(self):

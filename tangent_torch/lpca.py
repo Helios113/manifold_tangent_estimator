@@ -9,7 +9,7 @@ class LPCA:
     def __init__(self, d, k=20):
         self.d, self.k = d, k
 
-    def fit(self, X, nn=None, cache=None):
+    def fit(self, X, nn=None):
         self.X = X
         self.nn = nn if nn is not None else knn_train(X, self.k)
         return self
@@ -22,15 +22,24 @@ class LPCA:
 
     def tangents_train(self):
         n, p = self.X.shape
-        out = torch.empty(n, p, self.d, dtype=DT, device=DEV)
+        out = torch.empty(n, p, self.d, dtype=self.X.dtype, device=DEV)
         ch = auto_chunk((self.k + 1) * p * 8 * 4 + p * p * 8 * 3)
         for s in chunks(n, ch):
             out[s] = self._tangent(self.X[s], self.nn[1][s, : self.k])
         return out
 
-    def tangents_query(self, Y, cache=None):
+    def tangents_at(self, ids):
+        """Tangents at the training points with indices ids (same neighbourhoods as tangents_train, without computing the others)."""
+        p = self.X.shape[1]
+        out = torch.empty(len(ids), p, self.d, dtype=self.X.dtype, device=DEV)
+        ch = auto_chunk((self.k + 1) * p * 8 * 4 + p * p * 8 * 3)
+        for s in chunks(len(ids), ch):
+            out[s] = self._tangent(self.X[ids[s]], self.nn[1][ids[s], : self.k])
+        return out
+
+    def tangents_query(self, Y):
         _, idx = knn_query(self.X, Y, self.k)
-        out = torch.empty(len(Y), Y.shape[1], self.d, dtype=DT, device=DEV)
+        out = torch.empty(len(Y), Y.shape[1], self.d, dtype=self.X.dtype, device=DEV)
         ch = auto_chunk((self.k + 1) * Y.shape[1] * 8 * 4 + Y.shape[1] ** 2 * 8 * 3)
         for s in chunks(len(Y), ch):
             out[s] = self._tangent(Y[s], idx[s])
