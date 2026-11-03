@@ -18,3 +18,6 @@ Training outputs (`results/`, `logs/`, checkpoints) are not tracked by git.
 | [`experiment_code/`](experiment_code/README.md) | scripts of the benchmark campaigns, `series_1` ... `series_8` |
 | [`CLUSTER.md`](CLUSTER.md) | the slurm nodes and how to submit |
 | `plan.md` | protocol of the estimator benchmark |
+
+
+For the orth normalisation, we need to be careful when we do it so that w1 gets the same gradient signal

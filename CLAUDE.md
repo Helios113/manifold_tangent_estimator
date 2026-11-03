@@ -12,3 +12,8 @@ Slurm log files must start with the job id: #SBATCH --output=logs/%j_<name>.out 
 
 
 please write a systematic plan of all tests and experiments and as you execute them, please save the data and plots, do not do adhoc tests
+
+If a node looks busy because of a job by llmsvc, it still counts as free: that job stops a few minutes after we submit our sbatch.
+
+
+Do not run extra experiments without me telling you to

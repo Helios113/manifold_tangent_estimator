@@ -48,7 +48,7 @@ class LEGO:
             eta = (Xc.norm(dim=2) ** (2 * (1 + self.beta))).sum(1)
             Kg = Xc @ Xc.transpose(1, 2) + eta[:, None, None] * eye_k
             dphi = Phi_g[idx[s]] - Phi_g[s][:, None, :]            # (B,k,m)
-            G = Xc.transpose(1, 2) @ torch.linalg.solve(Kg, dphi)  # dual-form ridge solution (B,p,m)
+            G = Xc.transpose(1, 2) @ torch.cholesky_solve(dphi, torch.linalg.cholesky(Kg))  # dual-form ridge solution (B,p,m); Kg is positive definite (the GPU LU solve crashes with k ~ 1600)
             Graw[:, :, s] = G.permute(1, 2, 0)
         # low-pass: project every gradient component onto span(UPhi); only the (p, m, m0) coefficients are kept
         self.C = (Graw.reshape(p * m, n) @ self.UPhi).reshape(p, m, m0)

@@ -1,0 +1,11 @@
+# settings shared by the diagnostics that estimate tangent spaces (tangent.py, lpca_lego.py); the run's own settings come from its config.toml
+[points]           # the points of the training distribution (sphere points + the run's noise, embedded), see eval_points.py
+n = 10000          # points (series 8 size): the cloud LPCA, LEGO and the nearest-neighbour search of tangent.py use
+n_eval = 1000      # tangents are computed and compared at the first n_eval points
+seed = 123
+
+[lego]             # series 8 tuned setting
+k = 1616           # neighbours
+m = 200
+m0 = 400
+beta = 0.5

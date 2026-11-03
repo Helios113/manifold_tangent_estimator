@@ -1,6 +1,6 @@
 """Analytic k-sphere in R^(k+1) (any intrinsic dimension k, default the 2-sphere in R^3) with exact tangent spaces, plus a sampler of points on it (experiment 4 of PLAN.md).
 
-Use from other scripts:  Sphere(k).sample(n, generator) -> (n, k+1) points;  tangent_basis(p) / tangent_projector(p) give the tangent space at any p.
+Use from other scripts:  Sphere(k).sample(n, generator, noise=0.0) -> (n, k+1) points (optionally with Gaussian noise);  tangent_basis(p) / tangent_projector(p) give the tangent space at any p.
 Running this file only checks the geometry and plots it; no points are saved."""
 import sys
 from pathlib import Path
@@ -47,10 +47,13 @@ class Sphere:
     def __init__(self, k=2):
         self.k, self.D = k, k + 1
 
-    def sample(self, n, generator=None, dtype=torch.float32, device=None):
-        """n points uniform on the sphere (normalised Gaussians), shape (n, D)."""
+    def sample(self, n, generator=None, dtype=torch.float32, device=None, noise=0.0):
+        """n points uniform on the sphere (normalised Gaussians), shape (n, D). noise > 0 adds N(0, noise^2 I) to every point afterwards (no renormalisation), so the points leave the sphere;
+        noise = 0 draws nothing extra from the generator."""
         g = torch.randn(n, self.D, generator=generator, dtype=dtype, device=device)
-        return g / g.norm(dim=1, keepdim=True)
+        p = g / g.norm(dim=1, keepdim=True)
+        if noise > 0: p = p + noise * torch.randn(n, self.D, generator=generator, dtype=dtype, device=device)
+        return p
 
     def tangent_projector(self, p):
         """Orthogonal projector onto the tangent space at p: I - p p^T, shape (n, D, D)."""
