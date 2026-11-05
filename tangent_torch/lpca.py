@@ -3,16 +3,11 @@ import torch
 from .common import *
 
 
-class LPCA:
+class LPCA(KNNEstimator):
     name = "lpca"
 
     def __init__(self, d, k=20):
         self.d, self.k = d, k
-
-    def fit(self, X, nn=None):
-        self.X = X
-        self.nn = nn if nn is not None else knn_train(X, self.k)
-        return self
 
     def _tangent(self, C, idx):
         """C: (B,p) centres, idx: (B,k) training neighbours -> (B,p,d)."""
@@ -38,7 +33,7 @@ class LPCA:
         return out
 
     def tangents_query(self, Y):
-        _, idx = knn_query(self.X, Y, self.k)
+        idx = self._query_idx(Y)
         out = torch.empty(len(Y), Y.shape[1], self.d, dtype=self.X.dtype, device=DEV)
         ch = auto_chunk((self.k + 1) * Y.shape[1] * 8 * 4 + Y.shape[1] ** 2 * 8 * 3)
         for s in chunks(len(Y), ch):

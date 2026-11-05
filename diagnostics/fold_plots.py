@@ -2,7 +2,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 
-from common import WIDTH, BLUE, ORANGE, AQUA, INK, MUTED, FAINT, band, neurips, save, titled
+from common import WIDTH, BLUE, ORANGE, AQUA, INK, FAINT, band, neurips, save, titled
 
 XLABEL = r"Angle $\varphi$ along the path (degrees)"
 NOTE = "dotted: the axis is crossed; green dashed: start; black dashed: end of a loop"
@@ -31,23 +31,14 @@ def legend_right(ax, **kw):
 
 @neurips
 def plot_loops(out, name, phi, A, i0, loop_ends, marks):
-    """(a) the latent code and (b) the lifted Arctan2 angles against their value at the start: they return to 0 when a loop closes without a cut; (c) how many times each angle winds around a cut."""
-    z, thu, wind = A["z"], A["thu"], A["wind"]
-    paths = [(np.linalg.norm(z - z[:, i0:i0 + 1], axis=-1), "Latent code $z$: distance from its value at the start", "$|z(\\varphi) - z(\\mathrm{start})|$")]
-    if thu is not None: paths.append((np.linalg.norm(thu - thu[:, i0:i0 + 1], axis=-1), "Arctan2 angles, unwrapped along the path: distance from the start", "$|\\theta(\\varphi) - \\theta(\\mathrm{start})|$ (rad)"))
-    n = len(paths) + (thu is not None)
-    fig = plt.figure(figsize=(WIDTH, 1.7 * n + .4)); gs = fig.add_gridspec(n, 1, hspace=.65)
-    axes = [fig.add_subplot(gs[i]) for i in range(len(paths))]
-    for i, (ax, (d, t, y)) in enumerate(zip(axes, paths)):
-        band(ax, phi, d, BLUE, "median (10th to 90th percentile shaded)"); ax.plot(phi, d.max(0), color=ORANGE, lw=.8, label="largest over circles")
-        titled(ax, "abc"[i], t); ax.set_ylabel(y); ax.set_ylim(bottom=0)
-    if thu is not None: axes[1].axhline(2 * np.pi, color=MUTED, lw=.5, ls="-"); axes[1].text(phi[-1], 2 * np.pi, "$2\\pi$ ", ha="right", va="bottom", fontsize=6, color=MUTED)
-    axes[0].legend(loc="lower center", fontsize=5.5)
-    finish(fig, axes, phi, marks)
-    if thu is not None:
-        ax = fig.add_subplot(gs[n - 1]); ks = np.unique(np.concatenate([wind(i).ravel() for i in loop_ends])); w = .8 / len(loop_ends); cols = [BLUE, ORANGE, AQUA]
-        for l, i in enumerate(loop_ends): ax.bar(ks + (l - (len(loop_ends) - 1) / 2) * w, [(wind(i) == v).sum() for v in ks], w, color=cols[l % 3], label=f"after loop {l + 1}")
-        ax.set_xticks(ks); ax.set_xlabel("winding of a lifted angle (multiples of $2\\pi$; 0 = the loop closes without crossing a cut)"); ax.set_ylabel("(circle, angle) pairs"); ax.legend(loc="upper right")
-        titled(ax, "c", "Winding of the Arctan2 angles after each loop")
+    """The latent code along the loops: its distance from the start returns to 0 when a loop closes without a cut."""
+    z = A["z"]
+    d = np.linalg.norm(z - z[:, i0:i0 + 1], axis=-1)
+    fig = plt.figure(figsize=(WIDTH, 2.4)); gs = fig.add_gridspec(1, 1, hspace=.65)
+    ax = fig.add_subplot(gs[0])
+    band(ax, phi, d, BLUE, "median (10th to 90th percentile shaded)"); ax.plot(phi, d.max(0), color=ORANGE, lw=.8, label="largest over circles")
+    titled(ax, "a", "Latent code $z$: distance from its value at the start"); ax.set_ylabel("$|z(\\varphi) - z(\\mathrm{start})|$"); ax.set_ylim(bottom=0)
+    ax.legend(loc="lower center", fontsize=5.5)
+    finish(fig, [ax], phi, marks)
     fig.suptitle(f"{name}:\ndistance from the start point ($\\varphi$ = {phi[i0]:.0f}$^\\circ$) along the loops", y=.97, fontsize=7.5)
     save(fig, out, "loops")

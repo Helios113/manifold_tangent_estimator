@@ -37,7 +37,61 @@ class QuadraticEmbedding:
         return self.Q @ J
 
 
-EMBEDDINGS = {"quadratic": QuadraticEmbedding}
+class Torus:
+    """Unit 2-torus (doughnut) in R^4: {(cos θ, sin θ, cos φ, sin φ) : θ, φ ∈ [0, 2π)}.
+    
+    This is a 2-dimensional manifold embedded in 4-dimensional space.
+    The tangent space at any point is spanned by the partial derivatives w.r.t. θ and φ.
+    Points have shape (n, 4)."""
+
+    def __init__(self, k=2):
+        assert k == 2, "Only 2D torus is currently implemented"
+        self.k, self.D = k, 4  # 2D manifold in R^4
+
+    def sample(self, n, generator=None, dtype=torch.float32, device=None, noise=0.0):
+        """n points uniform on the torus, shape (n, 4).
+        noise > 0 adds N(0, noise^2 I) to every point afterwards (no renormalisation)."""
+        θ = 2 * np.pi * torch.rand(n, 1, generator=generator, dtype=dtype, device=device)
+        φ = 2 * np.pi * torch.rand(n, 1, generator=generator, dtype=dtype, device=device)
+        p = torch.cat([torch.cos(θ), torch.sin(θ), torch.cos(φ), torch.sin(φ)], dim=1)
+        if noise > 0:
+            p = p + noise * torch.randn(n, self.D, generator=generator, dtype=dtype, device=device)
+        return p
+
+    def tangent_projector(self, p):
+        """Orthogonal projector onto the tangent space at p: shape (n, D, D)."""
+        # For torus, we need to project onto the tangent space
+        # The tangent space is orthogonal to both normal vectors
+        # Normal 1: (cos θ, sin θ, 0, 0) - radial in first circle
+        # Normal 2: (0, 0, cos φ, sin φ) - radial in second circle
+        # So the projector is I - n1 n1^T - n2 n2^T
+        n1 = p[:, :2]  # First circle normal
+        n2 = p[:, 2:]  # Second circle normal
+        P1 = torch.eye(self.D, dtype=p.dtype, device=p.device) - n1[:, :, None] * n1[:, None, :]
+        P2 = torch.eye(self.D, dtype=p.dtype, device=p.device) - n2[:, :, None] * n2[:, None, :]
+        # The tangent projector is the intersection: project onto both
+        return P1 @ P2
+
+    def tangent_basis(self, p):
+        """Orthonormal basis of the tangent space at p, shape (n, D, k).
+        For the 2D torus in R^4, we use:
+        e1 = (-sin θ, cos θ, 0, 0) - tangent to first circle
+        e2 = (0, 0, -sin φ, cos φ) - tangent to second circle
+        These are already orthonormal."""
+        e1 = torch.cat([-p[:, 1:2], p[:, 0:1], torch.zeros_like(p[:, :1]), torch.zeros_like(p[:, :1])], dim=1)
+        e2 = torch.cat([torch.zeros_like(p[:, :1]), torch.zeros_like(p[:, :1]), -p[:, 3:4], p[:, 2:3]], dim=1)
+        return torch.stack([e1, e2], dim=2)
+
+    def embed_points(self, p, emb):
+        """Points of the embedded torus: p (n, D) -> (n, ambient_dim)."""
+        return emb(p)
+
+    def embed_tangent_basis(self, p, B, emb):
+        """Orthonormal tangent basis of the embedded torus at emb(p): (n, ambient_dim, k)."""
+        return torch.linalg.qr(emb.jacobian(p) @ B)[0]
+
+
+EMBEDDINGS = {"quadratic": QuadraticEmbedding, "torus": Torus}
 
 
 class Sphere:

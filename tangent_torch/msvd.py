@@ -7,18 +7,13 @@ import torch
 from .common import *
 
 
-class MultiscaleSVD:
+class MultiscaleSVD(KNNEstimator):
     name = "msvd"
 
     def __init__(self, d, scales, gap=5.0):
         self.d, self.scales, self.gap = d, sorted(scales), gap
         self.k = max(self.scales)
         self.last_scale = None
-
-    def fit(self, X, nn=None):
-        self.X = X
-        self.nn = nn if nn is not None else knn_train(X, self.k)
-        return self
 
     def _eig(self, P):
         """P: (B,m,p) centred patches -> top-d basis (B,p,d), lambda_d, lambda_{d+1} (eigenvalues of P^T P)."""
@@ -63,8 +58,7 @@ class MultiscaleSVD:
         return self._run(self.X[ids], self.nn[1][ids, : self.k])
 
     def tangents_query(self, Y):
-        _, idx = knn_query(self.X, Y, self.k)
-        return self._run(Y, idx)
+        return self._run(Y, self._query_idx(Y))
 
     def state_nbytes(self):
         return 0

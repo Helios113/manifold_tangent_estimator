@@ -1,3 +1,4 @@
+import json
 import sys
 from pathlib import Path
 
@@ -11,7 +12,7 @@ import matplotlib.pyplot as plt
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "auto_encoder"))
-from common import BLUE, ORANGE, WIDTH, neurips, save, titled
+from common import BLUE, ORANGE, WIDTH, angle_summary, neurips, save, titled
 from eval_points import eval_points
 from plots import load, load_net
 
@@ -131,6 +132,11 @@ def cos_between_tangent_spaces(A, B):
     return cos
 
 
+def principal_angles(A, B):
+    """(n, k) principal angles between the tangent spaces A, B (n, D, k) at the same points, ascending, in degrees."""
+    return np.sort(np.degrees(np.arccos(np.clip(cos_between_tangent_spaces(A, B), -1, 1))), axis=1)
+
+
 def compare(run):
     run, _ = load(run)
     out = out_dir(run)
@@ -140,31 +146,55 @@ def compare(run):
         np.load(out / "tangent_decoder.npz"),
     )
     pairs = {
-        r"$T_{x}M$ vs $T_{x'}M$": (d["T"], d["T_recon"]),
-        r"$T_{x}M$ vs $T_{\hat{x}}M$": (d["T"], s["L_recon"]),
-        r"$T_{x'}M$ vs $T_{\hat{x}}M$": (d["T_recon"], s["L_recon"]),
-        r"$z$ vs $\hat{z}$": (d["T_latent"], s["L"]),
-        r"$T_{x}M$ vs $J E_{-1}$": (d["T"], dec["T_dec"]),
-        r"$T_{x'}M$ vs $J E_{-1}$": (d["T_recon"], dec["T_dec"]),
+        "true input vs true reconstructed": (d["T"], d["T_recon"]),
+        "true input vs estimated reconstructed": (d["T"], s["L_recon"]),
+        "true reconstructed vs estimated reconstructed": (d["T_recon"], s["L_recon"]),
+        "true latent vs estimated latent": (d["T_latent"], s["L"]),
+        "true input vs decoder Jacobian": (d["T"], dec["T_dec"]),
+        "true reconstructed vs decoder Jacobian": (d["T_recon"], dec["T_dec"]),
     }
-
-    cos = {name: cos_between_tangent_spaces(A, B) for name, (A, B) in pairs.items()}
-    plot_compare(out, f"{run.name} {Path(WEIGHTS).stem}", cos)
+    singular = {  # the three tangent maps of the comparison, (n, D, k)
+        "true latent": d["T_latent"],
+        "true reconstructed": d["T_recon"],
+        "estimated reconstructed": s["L_recon"],
+    }
+    angles = {name: principal_angles(A, B) for name, (A, B) in pairs.items()}
+    sv = {name: np.linalg.svd(M, compute_uv=False) for name, M in singular.items()}
+    np.savez(
+        out / "tangent_compare.npz",
+        names=np.array(list(angles)),
+        singular_value_names=np.array(list(sv)),
+        **{f"angles_{i}": a for i, a in enumerate(angles.values())},
+        **{f"singular_values_{i}": v for i, v in enumerate(sv.values())},
+    )
+    summary = {name: angle_summary(a) for name, a in angles.items()}
+    json.dump(summary, open(out / "tangent_compare.json", "w"), indent=1)
+    plot_compare(out, f"{run.name} {Path(WEIGHTS).stem}", angles)
+    print("plotted plot_compare")
 
 
 @neurips
-def plot_compare(out, title, cos):
+def plot_compare(out, title, angles):
+    """One histogram per comparison: the (n,) largest principal angle a[:, -1] of
+    every point, in degrees. The bins are built explicitly: a data range too
+    small to hold them (float precision when the spaces agree almost exactly, or
+    an exactly constant largest angle) would crash np.histogram with 'cannot
+    create N finite-sized bins', so the degenerate case gets a visible window."""
     fig, axes = plt.subplots(
         3, 2, figsize=(WIDTH, 5.4), gridspec_kw=dict(hspace=0.8, wspace=0.3)
     )
-    for ax, (letter, (name, a)) in zip(axes.flat, zip("abcdef", cos.items())):
-        ax.hist(a[:, -1], bins=40, color=BLUE)
+    for ax, (letter, (name, a)) in zip(axes.flat, zip("abcdef", angles.items())):
+        v = a[:, -1]
+        lo, hi = float(v.min()), float(v.max())
+        if not hi > lo:
+            lo, hi = lo - 0.5, hi + 0.5
+        ax.hist(v, bins=np.linspace(lo, hi, 41), color=BLUE)
         ax.axvline(
-            np.median(a[:, -1]),
+            np.median(v),
             color=ORANGE,
             ls="--",
             lw=0.9,
-            label=f"median {np.median(a[:, -1]):.3g}$^\\circ$",
+            label=f"median {np.median(v):.3g}$^\\circ$",
         )
         titled(ax, letter, name)
         ax.set_xlabel("Largest principal angle (degrees)")

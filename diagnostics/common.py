@@ -67,6 +67,19 @@ def band(ax, x, y, color, label, lo=10, hi=90):
     )
 
 
+def angle_summary(a):
+    """Summary of principal angles a (n, k) in degrees (ascending per point):
+    mean / median / p90 of the largest angle and mean of the smallest and of all angles."""
+    largest = a[:, -1]
+    return dict(
+        largest_angle_mean=float(largest.mean()),
+        largest_angle_median=float(np.median(largest)),
+        largest_angle_p90=float(np.percentile(largest, 90)),
+        mean_angle_mean=float(a.mean()),
+        smallest_angle_mean=float(a[:, 0].mean()),
+    )
+
+
 def stage_colors(n):
     """n colours along viridis, one per stage (the yellow end is left out: it does not show on white)."""
     cm = plt.get_cmap("viridis")

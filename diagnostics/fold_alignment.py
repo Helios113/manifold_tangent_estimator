@@ -1,8 +1,3 @@
-"""The folds of fold_determinant_stages.py: where they are along every circle, and what every stage and step does to the tangent directions there.
-A fold is a point of the path where det A (the determinant of the encoder's pushforward A) changes sign: the smallest singular value of A goes through ~0 between two samples of different sign. Every sign change on every circle (the whole path, all loops) is one fold,
-located at the one of the two samples with the smaller smallest singular value; a circle without a sign change has no fold. Per stage and step: the smallest singular value at the folds against its typical value (median over the path).
-Two figures: fold_location.png (is there a fold, and where) and fold_origin.png (which stage / step creates it)."""
-
 import matplotlib.pyplot as plt
 import numpy as np
 from common import (
@@ -23,96 +18,75 @@ from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 
 
-def fold_alignment(
-    phi, Q, rel, rest, step_vol, labels, step_labels, threshold, window=30
-):
-    """rel: (circles, phi) sign of det A relative to the start of the path; rest: (circles, phi, stages + 1) log10 |det(L_s Q_s)|; step_vol: (circles, phi, stages) log10 volume of every step;
-    threshold: a stage / step whose smallest singular value at the folds is below threshold x its typical value counts as folded; window: samples around a fold that are kept.
-    Returns the dict of results.json and the arrays the plots need."""
-    smin, smax, smin_s = (
-        Q["sv"][..., -1],
-        Q["sv"][..., 0],
-        Q["sv_steps"][..., -1],
-    )  # (circles, phi, stages + 1), (circles, phi, stages)
-    smin_A = smin[:, :, -1]
+def fold_arrays(phi, Q, rel, rest, step_vol, threshold, window=30):
+    """Everything the two figures need.
+
+    Q:        per-point quantities from point_quantities; sv / sv_steps indexed
+              (circles, phi, stages (+1 for sv)).
+    rel:      (circles, phi) orientation of det A relative to the start.
+    rest:     (circles, phi, stages + 1) log10 |det(L_s Q_s)|.
+    step_vol: (circles, phi, stages) log10 volume of every step.
+    threshold: a stage / step whose smallest singular value at the folds is below
+              threshold x its typical value counts as folded.
+    window:   samples kept around each fold (folds closer to the ends are dropped).
+
+    Returns F with:
+      phi, rel, folds      — path, orientation, fold locations (circle, index);
+      smin, smin_s         — smallest singular value per stage / per step;
+      ratio, ratio_s       — the above at the folds over its median over the path
+                             (None when there is no fold);
+      aligned              — for smin, rest, smin_s and step_vol, the
+                             (folds, 2*window+1, stages(+1)) windows around the folds
+                             (empty when no fold has a full window).
+    """
+    smin, smin_s = Q["sv"][..., -1], Q["sv_steps"][..., -1]
+    smin_A = smin[:, :, -1]  # the smallest singular value of A itself
+
+    # One fold per sign change of rel, at the sample with the smaller smin_A.
     folds = [
         (c, j if smin_A[c, j] <= smin_A[c, j + 1] else j + 1)
         for c in range(len(rel))
         for j in np.nonzero(np.diff(rel[c]))[0]
     ]
-    typical, typical_s = np.median(smin, axis=(0, 1)), np.median(smin_s, axis=(0, 1))
-    res = dict(
-        n_folds=len(folds),
-        circles=len(rel),
-        circles_with_a_fold=len({c for c, _ in folds}),
-        fold_phi_per_circle=[
-            [float(phi[i]) for c2, i in folds if c2 == c] for c in range(len(rel))
-        ],
-    )
     F = dict(
-        threshold=threshold,
         phi=phi,
-        smin=smin,
         rel=rel,
+        smin=smin,
+        smin_s=smin_s,
         folds=folds,
+        threshold=threshold,
         window=window,
         ratio=None,
         ratio_s=None,
         aligned={},
     )
-    if folds:
-        at, at_s = (
-            np.median(np.stack([smin[c, i] for c, i in folds]), 0),
-            np.median(np.stack([smin_s[c, i] for c, i in folds]), 0),
-        )
-        F.update(ratio=at / typical, ratio_s=at_s / typical_s)
-        kept = [(c, i) for c, i in folds if window <= i < len(phi) - window]
-        if kept:
-            F["aligned"] = {
-                key: np.stack([a[c, i - window : i + window + 1] for c, i in kept])
-                for key, a in dict(
-                    smin=smin, rest=rest, smin_s=smin_s, step_vol=step_vol
-                ).items()
-            }
-        first = next((j for j, r in enumerate(F["ratio"]) if r < threshold), None)
-        first_s = next((j for j, r in enumerate(F["ratio_s"]) if r < threshold), None)
-        res["stages"] = [
-            {
-                "index": j,
-                "label": labels[j],
-                "smin_at_fold": float(at[j]),
-                "smin_typical": float(typical[j]),
-                "ratio_fold_over_typical": float(F["ratio"][j]),
-                "cond_at_fold": float(
-                    np.median([smax[c, i, j] / smin[c, i, j] for c, i in folds])
-                ),
-            }
-            for j in range(len(labels))
-        ]
-        res[f"first_stage_with_ratio_below_{threshold}"] = (
-            None if first is None else {"index": first, "label": labels[first]}
-        )
-        res["steps"] = [
-            {
-                "index": j + 1,
-                "label": step_labels[j],
-                "smin_at_fold": float(at_s[j]),
-                "smin_typical": float(typical_s[j]),
-                "ratio_fold_over_typical": float(F["ratio_s"][j]),
-            }
-            for j in range(len(step_labels))
-        ]
-        res[f"first_step_with_ratio_below_{threshold}"] = (
-            None
-            if first_s is None
-            else {"index": first_s + 1, "label": step_labels[first_s]}
-        )
-    return res, F
+    if not folds:
+        return F
+
+    # Typical value: the median of each stage's / step's smallest singular value
+    # over the whole path; the ratio at the folds against it says who folded.
+    typical, typical_s = np.median(smin, axis=(0, 1)), np.median(smin_s, axis=(0, 1))
+    at = np.median(np.stack([smin[c, i] for c, i in folds]), 0)
+    at_s = np.median(np.stack([smin_s[c, i] for c, i in folds]), 0)
+    F["ratio"], F["ratio_s"] = at / typical, at_s / typical_s
+
+    # The windows around the folds that are not too close to the ends of the path.
+    kept = [(c, i) for c, i in folds if window <= i < len(phi) - window]
+    if kept:
+        F["aligned"] = {
+            key: np.stack([a[c, i - window : i + window + 1] for c, i in kept])
+            for key, a in dict(
+                smin=smin, rest=rest, smin_s=smin_s, step_vol=step_vol
+            ).items()
+        }
+    return F
 
 
 @neurips
-def plot_fold_location(out, name, F, marks):
-    """Is there a fold, and where: (a) the orientation of the encoder along every circle (a colour change is a fold), (b) the smallest singular value of A along every circle, with the folds marked."""
+def plot_fold_location(out, name, F, marks, confidence):
+    """Is there a fold, and where. (a) The orientation of the encoder along every
+    circle: a colour change is a fold. (b) The smallest singular value of A along
+    every circle, with the folds marked."""
     phi, rel, smin_A = F["phi"], F["rel"], F["smin"][:, :, -1]
     fig, (a1, a2) = plt.subplots(
         2,
@@ -121,6 +95,8 @@ def plot_fold_location(out, name, F, marks):
         sharex=True,
         gridspec_kw=dict(height_ratios=[1, 1.1], hspace=0.35),
     )
+
+    # (a) orientation per circle as a colour raster
     a1.imshow(
         rel,
         aspect="auto",
@@ -131,7 +107,7 @@ def plot_fold_location(out, name, F, marks):
         interpolation="nearest",
     )
     a1.spines[["left", "bottom"]].set_visible(True)
-    a1.set_ylabel("great circle")
+    a1.set_ylabel("path along circle")
     a1.yaxis.get_major_locator().set_params(integer=True)
     legend_right(
         a1,
@@ -140,28 +116,24 @@ def plot_fold_location(out, name, F, marks):
             Patch(color=ORANGE, label="flipped"),
         ],
     )
-    titled(
-        a1,
-        "a",
-        "Orientation of the encoder along each great circle: every colour change is a fold",
-    )
-    for c in range(len(smin_A)):
-        a2.plot(phi, np.log10(smin_A[c]), color=BLUE, lw=0.5, alpha=0.35)
-    a2.plot(phi, np.median(np.log10(smin_A), 0), color=INK, lw=1.1)
+    titled(a1, "a", "Orientation of the encoder along each circular path")
+
+    # (b) smallest singular value of A per circle, median, and the folds
+    # Guard against log10 of zero or negative values
+    smin_A_safe = np.maximum(smin_A, 1e-300)  # avoid log10(0) or log10(negative)
+    for c in range(len(smin_A_safe)):
+        a2.plot(phi, np.log10(smin_A_safe[c]), color=BLUE, lw=0.5, alpha=0.35)
+    a2.plot(phi, np.median(np.log10(smin_A_safe), 0), color=INK, lw=1.1)
     if F["folds"]:
         a2.plot(
             [phi[i] for _, i in F["folds"]],
-            [np.log10(smin_A[c, i]) for c, i in F["folds"]],
+            [np.log10(smin_A_safe[c, i]) for c, i in F["folds"]],
             "o",
             ms=2.5,
             color=ORANGE,
         )
-    a2.set_ylabel("log$_{10}$ smallest singular value of $A$")
-    titled(
-        a2,
-        "b",
-        "Smallest singular value of the pushforward: it drops towards 0 at every fold",
-    )
+    a2.set_ylabel("log$_{10}$ smallest singular value of pushforward")
+    titled(a2, "b", "Smallest singular value of the pushforward")
     legend_right(
         a2,
         handles=[
@@ -179,12 +151,17 @@ def plot_fold_location(out, name, F, marks):
         ],
     )
     finish(fig, [a1, a2], phi, marks)
-    fig.suptitle(f"{name}: {len(rel)} great circles", y=0.95, fontsize=7.5)
-    save(fig, out, "fold_location")
+    suptitle = f"{name}: {len(rel)} circles"
+    if confidence is not None:
+        suptitle = f"{name}: {len(rel)} circles, condifance for axis is {confidence}"
+
+    fig.suptitle(suptitle, y=0.95, fontsize=7.5)
+    save(fig, out, "fold_check")
 
 
 def around_panel(ax, F, key, names, colors, ylabel):
-    """A quantity around the folds (median over all folds), one curve per stage / step, against the angle from the fold."""
+    """One curve per stage / step: the median of a quantity over all folds, against
+    the angle from the fold. Text instead of curves when no fold has a full window."""
     al = F["aligned"].get(key)
     if al is None:
         ax.text(
@@ -202,11 +179,12 @@ def around_panel(ax, F, key, names, colors, ylabel):
         ax.plot(dphi, np.median(al[..., j], 0), color=colors[j], label=n)
     ax.axvline(0, color=FAINT, lw=0.6, ls=":")
     ax.set_ylabel(ylabel)
-    ax.set_xlabel("Angle from the fold (degrees)")
+    ax.set_xlabel("Angle from the fold")
 
 
 def ratio_panel(ax, F, ratio, names):
-    """The smallest singular value at the folds over its typical value, per stage / step: below the threshold the stage / step has folded."""
+    """Per stage / step: the smallest singular value at the folds over its typical
+    value, a bar chart. Below the threshold line the stage / step has folded."""
     if ratio is None:
         ax.text(
             0.5,
@@ -244,8 +222,11 @@ def ratio_panel(ax, F, ratio, names):
 
 @neurips
 def plot_fold_origin(out, name, F, labels, step_labels):
-    """Which stage or step creates the fold. Left: the stages (cumulative: the encoder up to the stage); right: the steps (what each step does on its own). Rows: the smallest singular value around the folds, the volume (left: what the rest of the network does
-    to the tangent image after the stage; right: what the step adds), and the ratio at the folds over the typical value."""
+    """Which stage or step creates the fold. Columns: stages (cumulative: the
+    encoder up to that stage) vs steps (what each step does on its own). Rows:
+    the smallest singular value around the folds, the volume (left: what the rest
+    of the network does after the stage; right: what the step adds), and the
+    at-the-folds / typical ratio of the smallest singular value."""
     step_names, colors = (
         labels[1:],
         stage_colors(len(labels)),
@@ -300,7 +281,8 @@ def plot_fold_origin(out, name, F, labels, step_labels):
     titled(ax[2, 0], "e", "Stages: folded?")
     titled(ax[2, 1], "f", "Steps: folded?")
     fig.suptitle(
-        f"{name}: around the {len(F['folds'])} folds (median over folds; a ratio below the threshold means folded)",
+        f"{name}: around the {len(F['folds'])} folds"
+        " (median over folds; a ratio below the threshold means folded)",
         y=1.0,
         fontsize=7.5,
     )

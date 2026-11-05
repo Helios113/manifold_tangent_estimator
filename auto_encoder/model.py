@@ -1,3 +1,4 @@
+import functools
 import math
 import re
 
@@ -6,24 +7,49 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-def smooth_leaky_relu(x, a=0.5, eps=1.0):
-    """Analytic leaky ReLU: a bijection of R with slope in (a, 1)."""
+def smooth_leaky_relu(x, a=0.5, eps=1.0, threshold=None):
+    """Analytic leaky ReLU: a bijection of R with slope in (a, 1).
+    threshold parameter is ignored for compatibility."""
     return 0.5 * ((1 + a) * x + (1 - a) * torch.sqrt(x * x + eps * eps))
 
 
-def smooth_leaky_relu_inv(y, a=0.5, eps=1.0):
-    """Closed-form inverse of smooth_leaky_relu, defined on all of R."""
+def smooth_leaky_relu_inv(y, a=0.5, eps=1.0, threshold=None):
+    """Closed-form inverse of smooth_leaky_relu, defined on all of R.
+    threshold parameter is ignored for compatibility."""
     return ((1 + a) * y - (1 - a) * torch.sqrt(y * y + a * eps * eps)) / (2 * a)
 
 
-def leaky_relu(x, a=0.5):
-    """Piecewise-linear leaky ReLU: slope 1 for x > 0, a for x < 0."""
+def leaky_relu(x, a=0.5, threshold=None):
+    """Piecewise-linear leaky ReLU: slope 1 for x > 0, a for x < 0.
+    threshold parameter is ignored for compatibility."""
     return F.leaky_relu(x, a)
 
 
-def leaky_relu_inv(y, a=0.5):
-    """Exact inverse of leaky_relu, defined on all of R."""
+def leaky_relu_inv(y, a=0.5, threshold=None):
+    """Exact inverse of leaky_relu, defined on all of R.
+    threshold parameter is ignored for compatibility."""
     return F.leaky_relu(y, 1 / a)
+
+
+def relu(x):
+    """Standard ReLU: max(0, x)."""
+    return F.relu(x)
+
+
+def relu_inv(y):
+    """Right inverse of ReLU: returns y for y > 0, 0 otherwise."""
+    return F.relu(y)
+
+
+def fat_relu(x, threshold=0.0):
+    """FATReLU: Forced-Activation Threshold ReLU. x when x >= threshold, 0 otherwise."""
+    return torch.where(x >= threshold, x, torch.zeros_like(x))
+
+
+def fat_relu_inv(y, threshold=0.0):
+    """Right inverse of FATReLU. Since FATReLU is not bijective for x < threshold, 
+    we return y + threshold for y > 0 (approximate inverse)."""
+    return torch.where(y > 0, y + threshold, torch.zeros_like(y))
 
 
 def jump(x):
@@ -39,20 +65,27 @@ def jump_inv(y):
 ACTIVATIONS = {
     "smooth_leaky_relu": (smooth_leaky_relu, smooth_leaky_relu_inv),
     "leaky_relu": (leaky_relu, leaky_relu_inv),
+    "relu": (relu, relu_inv),
+    "fat_relu": (fat_relu, fat_relu_inv),
     "jump": (jump, jump_inv),
 }
 
 
-class Arctan2(nn.Module):
-    """x (..., 2m) -> angles (..., m): arctan2(first half, second half) of the last dim. The radius of each pair is dropped, so inverse returns unit pairs."""
+class BottleneckRMSNorm(nn.Module):
+    """RMS norm on the latent code: z / sqrt(mean(z^2) + eps), optionally
+    rescaled by a learnable per-dimension gain. Without the gain every latent
+    vector lies on the sphere of radius sqrt(d), which imposes the point-2-style
+    norm constraint on the bottleneck; the decoder is NOT given the norm back,
+    so the scale is a deliberate degree of freedom the model must do without."""
 
-    def forward(self, x):
-        a, b = x.chunk(2, dim=-1)
-        return torch.atan2(a, b)
+    def __init__(self, dim, gain=True, eps=1e-6):
+        super().__init__()
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(dim)) if gain else None
 
-    def inverse(self, theta):
-        """angles (..., m) -> (sin theta, cos theta) (..., 2m), the unit-radius preimage under forward."""
-        return torch.cat([torch.sin(theta), torch.cos(theta)], -1)
+    def forward(self, z):
+        z = z * torch.rsqrt(z.pow(2).mean(dim=-1, keepdim=True) + self.eps)
+        return z * self.weight if self.weight is not None else z
 
 
 def linear_init(fan_in, fan_out):
@@ -66,7 +99,13 @@ def orthogonal_init(fan_in, fan_out):
     return torch.nn.init.orthogonal_(torch.empty(fan_in, fan_out))
 
 
-INITS = {"uniform": linear_init, "orthogonal": orthogonal_init}
+def normal_init(fan_in, fan_out):
+    """(fan_in, fan_out) weights drawn from normal distribution N(0, 1/sqrt(fan_in))."""
+    std = 1 / math.sqrt(fan_in)
+    return torch.randn(fan_in, fan_out) * std
+
+
+INITS = {"uniform": linear_init, "orthogonal": orthogonal_init, "normal": normal_init}
 
 
 def gram_error_euclidian(W):
@@ -89,173 +128,121 @@ class DeepAutoEncoder(nn.Module):
         self,
         dims,
         activation="smooth_leaky_relu",
-        arctan2_after=0,
-        radius_head=0,
         init="uniform",
-        arctan2_layernorm=False,
         bias=False,
-        arctan2_project=False,
-        arctan2_x_hidden=(),
-        arctan2_x_activation="",
+        rms_norm=False,
+        rms_gain=True,
+        rms_eps=1e-6,
+        activation_alpha=None,
+        tied_weights=True,
+        activation_threshold=None,
     ):
         super().__init__()
         self.n = len(dims) - 1
-        self.arctan2_after = arctan2_after
-        self.arctan2 = Arctan2()
-        if arctan2_project and not arctan2_after:
-            raise ValueError("arctan2_project needs arctan2_after >= 1")
-        self.project = arctan2_project
-        n_angles = (
-            dims[arctan2_after]
-            if arctan2_project and arctan2_after
-            else dims[arctan2_after] // 2
+        self.bias = bias
+        self.tied_weights = tied_weights
+        act, act_inv = ACTIVATIONS[activation]
+        if activation_alpha is not None:
+            # bind the slope a into the (forward, inverse) pair; jump ignores it
+            act = functools.partial(act, a=activation_alpha)
+            act_inv = functools.partial(act_inv, a=activation_alpha)
+        if activation_threshold is not None:
+            # bind the threshold into FATReLU
+            act = functools.partial(act, threshold=activation_threshold)
+            act_inv = functools.partial(act_inv, threshold=activation_threshold)
+        self.act, self.act_inv = act, act_inv
+        self.rms_norm = rms_norm
+        self.norm = (
+            BottleneckRMSNorm(dims[-1], gain=rms_gain, eps=rms_eps)
+            if rms_norm
+            else None
         )
-        if arctan2_x_hidden and not arctan2_project:
-            raise ValueError("arctan2_x_hidden needs arctan2_project")
-        self.x_act = ACTIVATIONS[arctan2_x_activation or activation][0]
-        if (
-            arctan2_project and arctan2_x_hidden
-        ):  # the x entry of every pair is an MLP of h instead of the single matrix P
-            xd = [n_angles, *arctan2_x_hidden, n_angles]
-            self.Px = nn.ParameterList(
-                [
-                    nn.Parameter(INITS[init](xd[j], xd[j + 1]))
-                    for j in range(len(xd) - 1)
-                ]
-            )
-            if bias:
-                self.bx = nn.ParameterList(
-                    [nn.Parameter(torch.zeros(xd[j + 1])) for j in range(len(xd) - 1)]
-                )
-        elif arctan2_project:
-            self.P = nn.Parameter(INITS[init](n_angles, n_angles))
         for i in range(self.n):
-            fan_in = n_angles if i == arctan2_after and i > 0 else dims[i]
-            setattr(self, f"W{i + 1}", nn.Parameter(INITS[init](fan_in, dims[i + 1])))
-        for i in range(self.n):
+            setattr(self, f"W{i + 1}", nn.Parameter(INITS[init](dims[i], dims[i + 1])))
             if bias:
                 setattr(self, f"b{i + 1}", nn.Parameter(torch.zeros(dims[i + 1])))
-        self.bias = bias
-        self.act, self.act_inv = ACTIVATIONS[activation]
-        if arctan2_layernorm and not arctan2_after:
-            raise ValueError("arctan2_layernorm needs arctan2_after >= 1")
-        self.norm = (
-            nn.LayerNorm(2 * n_angles, elementwise_affine=False)
-            if arctan2_layernorm
-            else None
-        )  # no parameters: it only centres and scales each sample's features
-        self.radius_head = None
-        if arctan2_after and radius_head:
-            m = n_angles  # number of pairs = number of angles
-            self.radius_head = nn.Sequential(
-                nn.Linear(2 * m, radius_head),
-                nn.Tanh(),
-                nn.Linear(radius_head, m),
-                nn.Softplus(),
-            )  # (sin, cos) of the angles -> m positive radii
+        # Decoder weights (untied if tied_weights=False)
+        if not tied_weights:
+            for i in range(self.n):
+                setattr(self, f"V{i + 1}", nn.Parameter(INITS[init](dims[i + 1], dims[i])))
+                if bias:
+                    setattr(self, f"c{i + 1}", nn.Parameter(torch.zeros(dims[i])))
 
     def weight_matrices(self):
         return [getattr(self, f"W{i + 1}") for i in range(self.n)]
+
+    def decoder_weight_matrices(self):
+        """Decoder weight matrices: either transposed encoder weights (tied) or separate weights (untied)."""
+        if self.tied_weights:
+            return [w.T for w in self.weight_matrices()]
+        else:
+            return [getattr(self, f"V{i + 1}") for i in range(self.n)]
 
     def biases(self):
         """The bias of every weight matrix, zeros when the model has none."""
         return [getattr(self, f"b{i + 1}") if self.bias else 0.0 for i in range(self.n)]
 
+    def decoder_biases(self):
+        """The bias of every decoder weight matrix, zeros when the model has none."""
+        if self.tied_weights:
+            return self.biases()
+        else:
+            return [getattr(self, f"c{i + 1}") if self.bias else 0.0 for i in range(self.n)]
+
     def composed_matrices(self):
-        """Weight matrices whose product is the linear chain: all of them, or only those after the Arctan2 (it cuts the chain)."""
-        return self.weight_matrices()[self.arctan2_after :]
+        """Weight matrices whose product is the linear chain: all of them."""
+        return self.weight_matrices()
 
     def encode(self, x):
         x = self.hidden(x)
-        return x @ self.weight_matrices()[-1] + self.biases()[-1]
+        z = x @ self.weight_matrices()[-1] + self.biases()[-1]
+        return self.norm(z) if self.norm is not None else z
 
-    def decode(self, z, radii=None):
-        """radii: (n, m) radii that replace the radius head's (or the unit radii without a head) at the Arctan2 layer, None = the model's own."""
-        return self._decode(z, radii)
+    def decode(self, z):
+        """The decoder; z is the (RMS-normalised) latent code. When rms_norm is
+        on, encode normalises z and decode consumes the normalised code: the
+        norm is the bottleneck's business, never decoded back."""
+        return self._decode(z)
 
-    def _decode(self, z, radii=None, record=None):
+    def _decode(self, z, record=None):
         """The decoder; record, a list, collects (label, tensor) after every step (see decoder_activations)."""
-        Ws, bs = self.weight_matrices(), self.biases()
+        Ws, bs = self.decoder_weight_matrices(), self.decoder_biases()
         note = (
             (lambda label, h: record.append((label, h)))
             if record is not None
             else (lambda label, h: None)
         )
-        h = (z - bs[-1]) @ Ws[-1].T
-        note(f"decoder: (z - b{self.n}) W{self.n}^T", h)
-        for i in range(self.n - 1, 0, -1):
-            if i == self.arctan2_after:
-                h = unit = self.arctan2.inverse(h)
-                note("decoder: Arctan2 inverse (unit pairs)", h)
-                if radii is not None or self.radius_head is not None:
-                    h = unit * (
-                        self.radius_head(unit) if radii is None else radii
-                    ).tile(2)
-                    note("decoder: radius-scaled pairs", h)
-                if self.project:
-                    h = h.chunk(2, dim=-1)[0]
-                    note(
-                        "decoder: first half of the pairs", h
-                    )  # the y half is h itself; the x half would be h P
-            h = self.act_inv(h)
-            note(f"decoder: layer {i} inverse activation", h)
-            h = (h - bs[i - 1]) @ Ws[i - 1].T
-            note(
-                f"decoder: layer {i} output" + (" (reconstruction)" if i == 1 else ""),
-                h,
-            )
+        dec_act = self.act_inv if self.tied_weights else self.act
+        if self.tied_weights:
+            h = (z - bs[-1]) @ Ws[-1]
+            note(f"decoder: (z - b{self.n}) W{self.n}^T", h)
+            for i in range(self.n - 1, 0, -1):
+                h = dec_act(h)
+                note(f"decoder: layer {i} inverse activation", h)
+                h = (h - bs[i - 1]) @ Ws[i - 1]
+                note(f"decoder: layer {i} output" + (" (reconstruction)" if i == 1 else ""), h)
+        else:
+            h = z @ Ws[-1] + bs[-1]
+            note(f"decoder: z V{self.n} + c{self.n}", h)
+            for i in range(self.n - 1, 0, -1):
+                h = dec_act(h)
+                note(f"decoder: layer {i} activation", h)
+                h = h @ Ws[i - 1] + bs[i - 1]
+                note(f"decoder: layer {i} output" + (" (reconstruction)" if i == 1 else ""), h)
         return h
 
-    def pairs(self, x):
-        """(..., 2m) the pair entries fed to Arctan2: x itself, or with arctan2_project (y, x) = (h, h P), or (h, MLP(h)) with arctan2_x_hidden."""
-        if not self.project:
-            return x
-        if not hasattr(self, "Px"):
-            return torch.cat([x, x @ self.P], -1)
-        h = x
-        for j, M in enumerate(self.Px):
-            h = h @ M + (self.bx[j] if self.bias else 0.0)
-            if j < len(self.Px) - 1:
-                h = self.x_act(h)  # no activation after the last matrix
-        return torch.cat([x, h], -1)
-
-    def true_radii(self, x):
-        """(n, m) radii sqrt(a^2 + b^2) of the m pairs (a, b) that Arctan2 drops: the two halves of the activated output of W_arctan2_after, before the layer norm (the decoder inverts the activation, not the layer norm)."""
-        for W, c in zip(self.weight_matrices()[: self.arctan2_after], self.biases()):
-            x = self.act(x @ W + c)
-        a, b = self.pairs(x).chunk(2, dim=-1)
-        return torch.sqrt(a**2 + b**2)
-
-    def predicted_radii(self, z):
-        """(n, m) radii the radius head predicts from the latent code alone: the decoder up to the Arctan2, then the head on the unit pairs of the decoded angles."""
-        Ws, bs = self.weight_matrices(), self.biases()
-        h = (z - bs[-1]) @ Ws[-1].T
-        for i in range(self.n - 1, self.arctan2_after, -1):
-            h = (self.act_inv(h) - bs[i - 1]) @ Ws[i - 1].T
-        return self.radius_head(self.arctan2.inverse(h))
-
-    def radius_loss(self, x, z):
-        """Mean squared relative error of the predicted radii against the true ones (the true radii are a constant target: no gradient flows into them)."""
-        with torch.no_grad():
-            r = self.true_radii(x)
-        return ((self.predicted_radii(z) / r - 1) ** 2).mean()
-
     def encoder_steps(self):
-        """[(label, fn)]: the encoder as a chain of functions h_(s-1) -> h_s (a layer with its bias and activation, the pair builder of arctan2_project, the layer norm, the Arctan2, the last matrix); applying them in order is encode."""
+        """[(label, fn)]: the encoder as a chain of functions h_(s-1) -> h_s (a layer with its bias and activation, the last matrix, and the bottleneck RMS norm); applying them in order is encode."""
         Ws, bs, steps = self.weight_matrices(), self.biases(), []
         for i in range(1, self.n):
             steps.append(
                 (f"layer {i}", lambda h, W=Ws[i - 1], b=bs[i - 1]: self.act(h @ W + b))
             )
-            if i == self.arctan2_after:
-                if self.project:
-                    steps.append(("pairs", self.pairs))
-                if self.norm is not None:
-                    steps.append(("layer norm", self.norm))
-                steps.append(("Arctan2", self.arctan2))
         steps.append(
             (f"layer {self.n} (output z)", lambda h, W=Ws[-1], b=bs[-1]: h @ W + b)
         )
+        if self.norm is not None:
+            steps.append(("bottleneck RMS norm", self.norm))
         return steps
 
     def intermediates(self, x):
@@ -266,11 +253,11 @@ class DeepAutoEncoder(nn.Module):
         return out
 
     def encoder_layers(self):
-        """One function per weight matrix: the map from the input of the layer to its output, composed of the consecutive steps of encoder_steps that belong to it (the layer with its bias and activation, and after the Arctan2 layer the pair builder, layer norm and Arctan2)."""
+        """One function per weight matrix: the map from the input of the layer to its output, composed of the consecutive steps of encoder_steps that belong to it (the layer with its bias and activation, plus the bottleneck RMS norm on the last one)."""
         groups = []
         for label, fn in self.encoder_steps():
             if re.match(r"layer \d", label):
-                groups.append([])  # not "layer norm"
+                groups.append([])
             groups[-1].append(fn)
 
         def compose(fns):
@@ -301,20 +288,16 @@ class DeepAutoEncoder(nn.Module):
             h = new
         return out
 
-    def decoder_activations(self, z, radii=None):
-        """[(label, tensor)]: the decoder from z, step by step as in decode: (z - b_n) W_n^T, then at the Arctan2 layer the unit pairs (sin, cos), the radius-scaled pairs and the kept first half, and for every layer the inverse activation and the layer output. The last tensor is decode(z)."""
+    def decoder_activations(self, z):
+        """[(label, tensor)]: the decoder from z, step by step as in decode: (z - b_n) W_n^T, then for every layer the inverse activation and the layer output. The last tensor is decode(z)."""
         record = []
-        self._decode(z, radii, record)
+        self._decode(z, record)
         return record
 
     def hidden(self, x):
         """Activations feeding the last weight matrix."""
-        for i, (W, c) in enumerate(zip(self.weight_matrices()[:-1], self.biases()), 1):
+        for W, c in zip(self.weight_matrices()[:-1], self.biases()[:-1]):
             x = self.act(x @ W + c)
-            if i == self.arctan2_after:
-                x = self.arctan2(
-                    self.pairs(x) if self.norm is None else self.norm(self.pairs(x))
-                )
         return x
 
     def forward(self, x):
@@ -367,12 +350,12 @@ def make_model(cfg):
     return DeepAutoEncoder(
         [cfg["ambient_dim"], *cfg["hidden_dims"], cfg["embedded_dim"]],
         cfg["activation"],
-        cfg["arctan2_after"],
-        cfg["radius_head"],
         cfg.get("init", "uniform"),
-        cfg.get("arctan2_layernorm", False),
         cfg.get("bias", False),
-        cfg.get("arctan2_project", False),
-        cfg.get("arctan2_x_hidden", []),
-        cfg.get("arctan2_x_activation", ""),
+        cfg.get("rms_norm", False),
+        cfg.get("rms_gain", True),
+        cfg.get("rms_eps", 1e-6),
+        cfg.get("activation_alpha"),
+        cfg.get("tied_weights", True),
+        cfg.get("activation_threshold"),
     )

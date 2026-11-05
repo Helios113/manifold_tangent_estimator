@@ -70,6 +70,19 @@ def chunks(n, size):
         yield slice(i, min(i + size, n))
 
 
+class KNNEstimator:
+    """Base for the kNN-based estimators (LPCA, MSVD, LocalPoly): stores the data and
+    its k nearest neighbours on fit, and serves query points by their kNN of the training data."""
+    def fit(self, X, nn=None):
+        self.X = X
+        self.nn = nn if nn is not None else knn_train(X, self.k)
+        return self
+
+    def _query_idx(self, Y):
+        _, idx = knn_query(self.X, Y, self.k)
+        return idx
+
+
 def auto_chunk(per_item_bytes, budget=3e9, lo=16, hi=8192):
     return int(max(lo, min(hi, budget // max(per_item_bytes, 1))))
 

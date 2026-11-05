@@ -1,7 +1,7 @@
 #!/bin/bash
-#SBATCH --partition=turing
-#SBATCH -w ngongotaha
-#SBATCH --gres=gpu:1
+#SBATCH --partition=hopper
+#SBATCH -w ruapehu
+#SBATCH --gres=gpu:0
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
 #SBATCH --time=04:00:00

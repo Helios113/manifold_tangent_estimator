@@ -21,7 +21,7 @@ def best_losses(sweep):
         cfg, m = tomllib.load(open(run / "config.toml", "rb")), json.load(open(run / "metrics.json"))
         h = pd.read_csv(run / "history.csv", usecols=["step", "val_dist"]).dropna()
         rows.append(dict(run=run.name, intrinsic_dim=cfg["intrinsic_dim"], ambient_dim=cfg["ambient_dim"], layers=len(cfg["hidden_dims"]) + 1, embedded_extra=cfg["embedded_dim"] - cfg["intrinsic_dim"],
-                         noise=cfg["noise"], radius_head=int(cfg["radius_head"] > 0), best_step=m["best_step"], relative_mse=m["relative_mse"], val_dist=h.loc[h.step == m["best_step"], "val_dist"].iloc[0],
+                         noise=cfg["noise"], radius_head=int(cfg.get("radius_head", 0) > 0), best_step=m["best_step"], relative_mse=m["relative_mse"], val_dist=h.loc[h.step == m["best_step"], "val_dist"].iloc[0],
                          orth_euclidian_composed=m["orth_after"]["orth_euclidian_composed"], orth_spectral_composed=m["orth_after"]["orth_spectral_composed"], enc_dec_latent_err=m["enc_dec_latent_err"]))
     return pd.DataFrame(rows)
 

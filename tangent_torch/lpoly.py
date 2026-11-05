@@ -20,18 +20,13 @@ def n_monomials(d, order):
     return sum(math.comb(d + s - 1, s) for s in range(2, order))
 
 
-class LocalPoly:
+class LocalPoly(KNNEstimator):
     name = "lpoly"
 
     def __init__(self, d, k=30, order=3, n_iter=3, reg=1e-6, radius=None):
         self.d, self.k, self.order, self.n_iter, self.reg, self.radius = d, k, order, n_iter, reg, radius
         self.q = d + n_monomials(d, order) if order > 2 else 0
         self._mono = None
-
-    def fit(self, X, nn=None):
-        self.X = X
-        self.nn = nn if nn is not None else knn_train(X, self.k)
-        return self
 
     # ------------------------------------------------------------------------------------------------------------------ monomials
     def _monomials(self, dev):

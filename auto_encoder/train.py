@@ -25,16 +25,15 @@ DEFAULTS = {
     "embedded_dim": 3,                  # latent dimension
     "hidden_dims": [6],                 # widths between ambient_dim and embedded_dim: one weight matrix more than entries
     "activation": "smooth_leaky_relu",  # key of model.ACTIVATIONS: "smooth_leaky_relu", "leaky_relu" or "jump"
-    "arctan2_after": 0,                 # k >= 1: apply model.Arctan2 to the activated output of weight matrix W_k (its width must be even; halves the input of W_(k+1)); 0 = off
-    "radius_head": 0,                   # width of the hidden layer of the untied MLP that predicts the Arctan2 pair radii from the decoded angles in decode; 0 = unit radii
+    "activation_alpha": None,        # slope of the leaky ReLU (smooth_leaky_relu / leaky_relu); None = the default 0.5
+    "activation_threshold": None,     # threshold for FATReLU; None = the default 0.0
     "prior_lambda": 0.0,                # weight of the MMD between the batch of latent codes and a same-size sample of N(0, I), so that z ~ N(0, I) can be sampled later; 0 skips it entirely
-    "init": "uniform",                  # key of model.INITS: "uniform" (nn.Linear's default draw) or "orthogonal" (all singular values of every weight matrix start at 1)
-    "radius_lambda": 0.0,               # weight of the radius loss: the mean squared relative error between the radius head's prediction (from the latent code) and the true radii of the Arctan2 pairs (before the layer norm), the true radii being a constant target; needs radius_head > 0; 0 skips it entirely
-    "arctan2_layernorm": False,         # layer norm (no learned parameters) over the features just before the Arctan2 of the encoder; needs arctan2_after >= 1
-    "arctan2_project": False,           # instead of doubling W_k (arctan2_after = k), keep it at its width m and build each Arctan2 pair as (h, h P) with a separate untied square matrix P; the width of W_k is then the number of angles (any size); needs arctan2_after >= 1
-    "arctan2_x_hidden": [],             # with arctan2_project: widths of the hidden layers of an untied MLP that builds the x entry of every pair from h (m -> widths -> m, no activation after the last matrix) instead of the matrix P; empty = use P
-    "arctan2_x_activation": "",         # key of model.ACTIVATIONS for that MLP; empty = the model's activation
+    "init": "uniform",                  # key of model.INITS: "uniform" (nn.Linear's default draw), "orthogonal" (all singular values of every weight matrix start at 1), or "normal" (Gaussian)
+    "rms_norm": False,                  # RMS norm on the latent code (see model.BottleneckRMSNorm)
+    "rms_gain": True,                   # learnable per-dimension gain of the bottleneck RMS norm
+    "rms_eps": 1e-6,                    # epsilon of the bottleneck RMS norm
     "bias": False,                      # add a bias b_i (zero at the start) to every weight matrix; the decoder subtracts them (the biases are not part of the orthogonality penalty)
+    "tied_weights": True,               # use tied weights (decoder = encoder^T) or untied (separate decoder weights)
     "optimizer": "adam",                # key of OPTIMIZERS
     "lr": 2e-4,
     "recon_lambda": 1.0,                # weight of the reconstruction MSE in the loss; 0 leaves it out of the loss (it is still logged as train_recon / val_recon)
@@ -70,10 +69,9 @@ def load_config(run):
     unknown = set(cfg) - set(DEFAULTS)
     if unknown: raise KeyError(f"unknown config keys: {sorted(unknown)}")
     if isinstance(cfg["hidden_dims"], int): cfg["hidden_dims"] = [cfg["hidden_dims"]]
-    if cfg["radius_lambda"] > 0 and not (cfg["arctan2_after"] and cfg["radius_head"]): raise ValueError("radius_lambda needs arctan2_after >= 1 and radius_head > 0")
     if cfg["topk_lambda"] > 0 and not 1 <= cfg["topk_k"] <= cfg["ambient_dim"]: raise ValueError("topk_k must be between 1 and ambient_dim")
     if cfg["plane_normal"] and len(cfg["plane_normal"]) != cfg["embedded_dim"]: raise ValueError("plane_normal needs embedded_dim numbers")
-    (run / "config.toml").write_text("".join(f"{k} = {toml_value(v)}\n" for k, v in cfg.items()))      # the config with every default filled in
+    (run / "config.toml").write_text("".join(f"{k} = {toml_value(v)}\n" for k, v in cfg.items() if v is not None))      # the config with every default filled in, skipping None values
     return cfg
 
 
@@ -88,7 +86,7 @@ def log_columns(net, cfg):
     """(header, row key) of the log table: the total train loss, the reconstruction loss, the other losses, then the Euclidian and the spectral orthonormality error of every W_i and of their product, the gradient norms."""
     cols = [("step", "step"), ("samples", "samples"), ("train_total", "train_total"), ("train_recon", "train_recon"), ("val_recon", "val_recon")]
     if cfg["orth_lambda"] > 0: cols += [("train_orth", "train_orth"), ("train_orth_scaled", "train_orth_scaled")]
-    for term in ("dist", "topk", "radius", "plane", "prior"):
+    for term in ("dist", "topk", "plane", "prior"):
         if cfg[f"{term}_lambda"] > 0: cols += [(k, k) for k in (f"train_{term}", f"train_{term}_scaled", f"val_{term}", f"val_{term}_scaled")]
     for short, kind in (("eucl", "euclidian"), ("spec", "spectral")):
         cols += [(f"{short}_W{i + 1}", f"orth_{kind}_W{i + 1}") for i in range(net.n)] + [(f"{short}_comp", f"orth_{kind}_composed")]
@@ -146,9 +144,6 @@ def train_step(net, opt, x, cfg):
     if cfg["topk_lambda"] > 0:
         topk = topk_loss(x, x_hat, cfg["topk_k"])
         loss = loss + cfg["topk_lambda"] * topk
-    if cfg["radius_lambda"] > 0:
-        radius = net.radius_loss(x, z)
-        loss = loss + cfg["radius_lambda"] * radius
     if cfg["plane_lambda"] > 0:
         plane = plane_distance(z, cfg["plane_normal"], cfg["plane_offset"])
         loss = loss + cfg["plane_lambda"] * plane
@@ -159,7 +154,7 @@ def train_step(net, opt, x, cfg):
     grads = {name: W.grad.norm().item() for name, W in zip(grad_names(net), net.weight_matrices())}      # Frobenius norm of the batch gradient
     opt.step()
     row = dict(train_recon=mse.item(), train_total=loss.item(), **grads)      # train_recon is the reconstruction MSE, train_total = recon_lambda x train_recon + the sum of the *_scaled terms
-    for term, value in (("orth", penalty if cfg["orth_lambda"] > 0 else None), ("dist", dist if cfg["dist_lambda"] > 0 else None), ("topk", topk if cfg["topk_lambda"] > 0 else None), ("radius", radius if cfg["radius_lambda"] > 0 else None),
+    for term, value in (("orth", penalty if cfg["orth_lambda"] > 0 else None), ("dist", dist if cfg["dist_lambda"] > 0 else None), ("topk", topk if cfg["topk_lambda"] > 0 else None),
                         ("plane", plane if cfg["plane_lambda"] > 0 else None), ("prior", prior if cfg["prior_lambda"] > 0 else None)):
         if value is not None: row[f"train_{term}"], row[f"train_{term}_scaled"] = value.item(), cfg[f"{term}_lambda"] * value.item()      # raw term, and lambda x raw term
     return row
@@ -173,7 +168,6 @@ def evaluate(net, X_val, cfg):
         val = {}
         if cfg["dist_lambda"] > 0: val["dist"] = distance_loss(X_val, x_hat).item()
         if cfg["topk_lambda"] > 0: val["topk"] = topk_loss(X_val, x_hat, cfg["topk_k"]).item()
-        if cfg["radius_lambda"] > 0: val["radius"] = net.radius_loss(X_val, z).item()
         if cfg["plane_lambda"] > 0: val["plane"] = plane_distance(z, cfg["plane_normal"], cfg["plane_offset"]).item()
         if cfg["prior_lambda"] > 0: val["prior"] = prior_mmd(z).item()
         for term, value in val.items(): row[f"val_{term}"], row[f"val_{term}_scaled"] = value, cfg[f"{term}_lambda"] * value

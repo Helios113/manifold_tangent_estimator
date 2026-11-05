@@ -96,7 +96,9 @@ for h in (1e-1, 1e-2, 1e-3):
     resid[h] = (r.norm(dim=1) / v.norm(dim=1)).max().item()
     print(f"    finite difference step {h}: relative residual outside span(T) {resid[h]:.3g}", flush=True)
 record("D", "D2 velocity in span(T), step 1e-3 (residual ~ t^2)", cfg["ambient_dim"], np.float64, resid[1e-3], 1e-4)
-rate = np.log10(resid[1e-2] / resid[1e-3])
+# Guard against division by zero or negative values in log10
+ratio = resid[1e-2] / max(resid[1e-3], 1e-300)
+rate = np.log10(ratio) if ratio > 0 else 0.0
 record("D", "D2 residual shrinks ~100x per 10x step (log10 ratio - 2)", cfg["ambient_dim"], np.float64, abs(rate - 2), 0.3)
 
 # ---- outputs

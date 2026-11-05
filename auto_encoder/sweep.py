@@ -10,9 +10,7 @@ The sweep folder holds sweep.toml, e.g.
     embedded_dim = [2, 3, 4]
     embedded_extra = [0, 1]                                 # not a train.py key: sets embedded_dim = intrinsic_dim + embedded_extra (do not also give embedded_dim)
     layers = [1, 2, 3, 4]                                   # not a train.py key: number of weight matrices; sets hidden_dims by hidden_widths (do not also give hidden_dims)
-    radius_head_on = [false, true]                          # not a train.py key: true sets radius_head = embedded_dim + 1, false sets 0 (do not also give radius_head)
     expansion = [false, true]                               # not a train.py key: the second width is 2 * ambient_dim (needs layers >= 3)
-    arctan2_after = [0, 2]                                  # needs layers >= 3
     lr = [1e-3, 2e-4, 5e-5]
     orth_lambda = [0.0, 0.1, 1.0]
 
@@ -33,7 +31,7 @@ from train import DEFAULTS, toml_value
 ROOT = Path(__file__).resolve().parents[1]
 SBATCH = ROOT / "auto_encoder" / "sweep.sbatch"
 MAX_ARRAY = 1000                                                                        # slurm allows arrays of 1001 tasks
-PSEUDO_KEYS = {"embedded_extra", "layers", "expansion", "radius_head_on"}
+PSEUDO_KEYS = {"embedded_extra", "layers", "expansion"}
 METRICS = ("best_step", "val_mse", "relative_mse", "enc_dec_latent_err")
 
 
@@ -55,7 +53,7 @@ def even(x):
 
 def hidden_widths(ambient, latent, layers, expansion):
     """Hidden widths of a network with `layers` weight matrices (layers - 1 widths): the first is ambient_dim; with expansion the second is 2 * ambient_dim.
-    The rest step linearly down to the latent size, so the widths contract after the first (or the second, with expansion). All rounded to even so Arctan2 can follow any of them."""
+    The rest step linearly down to the latent size, so the widths contract after the first (or the second, with expansion). All rounded to even."""
     widths = ([ambient] + ([2 * ambient] if expansion else []))[:layers - 1]
     n_rest = layers - 1 - len(widths)
     start = widths[-1] if widths else ambient
@@ -66,8 +64,6 @@ def valid(cfg):
     """False for the grid points that cannot exist or duplicate another one."""
     layers, expansion = cfg.get("layers", 2), cfg.get("expansion", False)
     if expansion and layers < 3: return False                       # needs both the ambient_dim and the 2 * ambient_dim widths
-    if cfg.get("arctan2_after", 0) and layers < 3: return False     # Arctan2 comes after layer 2 and needs a third matrix to feed
-    if cfg.get("radius_head", 0) and not cfg.get("arctan2_after", 0): return False       # the head only exists with Arctan2
     if cfg.get("ambient_dim", DEFAULTS["ambient_dim"]) < cfg.get("intrinsic_dim", DEFAULTS["intrinsic_dim"]) + 2: return False       # the quadratic embedding needs ambient_dim >= intrinsic_dim + 2
     return True
 
@@ -79,7 +75,6 @@ def grid_points(spec):
         cfg = {**spec["base"], **dict(zip(keys, values))}
         if not valid(cfg): continue
         if "embedded_extra" in cfg: cfg["embedded_dim"] = cfg.get("intrinsic_dim", DEFAULTS["intrinsic_dim"]) + cfg.pop("embedded_extra")
-        if "radius_head_on" in cfg: cfg["radius_head"] = cfg.get("embedded_dim", DEFAULTS["embedded_dim"]) + 1 if cfg.pop("radius_head_on") else 0
         if "layers" in cfg:
             cfg["hidden_dims"] = hidden_widths(cfg.get("ambient_dim", DEFAULTS["ambient_dim"]), cfg.get("embedded_dim", DEFAULTS["embedded_dim"]), cfg.pop("layers"), cfg.pop("expansion", False))
         yield "_".join(f"{k}{fmt(v)}" for k, v in zip(keys, values)), cfg
