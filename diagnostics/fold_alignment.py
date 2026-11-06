@@ -153,7 +153,7 @@ def plot_fold_location(out, name, F, marks, confidence):
     finish(fig, [a1, a2], phi, marks)
     suptitle = f"{name}: {len(rel)} circles"
     if confidence is not None:
-        suptitle = f"{name}: {len(rel)} circles, condifance for axis is {confidence}"
+        suptitle = f"{name}: {len(rel)} circles, confidence for axis is {confidence}"
 
     fig.suptitle(suptitle, y=0.95, fontsize=7.5)
     save(fig, out, "fold_check")

@@ -3,7 +3,7 @@
 usage: python auto_encoder/sweep.py <sweep folder> [submit | summarise]      (default: submit)
 
 The sweep folder holds sweep.toml, e.g.
-    sbatch_args = ["-w", "mauao", "--time=04:00:00"]       # optional: extra sbatch arguments for every job
+    sbatch_args = ["--time=04:00:00"]                       # optional: extra sbatch arguments for every job
     [base]                                                  # config.toml keys shared by every run (see train.DEFAULTS)
     total_samples = 5000000
     [grid]                                                  # one run per combination of these values

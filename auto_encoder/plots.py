@@ -24,7 +24,7 @@ import matplotlib.pyplot as plt
 import plotly.graph_objects as go
 from model import DeepAutoEncoder, make_model
 from plotly.subplots import make_subplots
-from sphere import EMBEDDINGS, Sphere
+from sphere import EMBEDDINGS, MANIFOLDS, Sphere
 
 N_LATENT = 2000
 MAX_ANNOTATED = 10  # Gram heatmaps up to this size show their numbers
@@ -170,8 +170,8 @@ def plot_orth(run):
 
 # ---- latent space ---------------------------------------------------------------------------------------------------------------------------------------
 def manifold(cfg):
-    """The sphere and the embedding of a run (train.py draws the embedding first from data_seed)."""
-    S = Sphere(cfg["intrinsic_dim"])
+    """The manifold and the embedding of a run (train.py draws the embedding first from data_seed)."""
+    S = MANIFOLDS[cfg["manifold"]](cfg["intrinsic_dim"])
     return S, EMBEDDINGS[cfg["embedding"]](
         cfg["ambient_dim"], torch.Generator().manual_seed(cfg["data_seed"]), in_dim=S.D
     )

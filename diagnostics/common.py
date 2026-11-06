@@ -146,17 +146,6 @@ def save(fig, folder, name):
     fig.savefig(folder / f"{name}.pdf", bbox_inches="tight")
     plt.close(fig)
 
-    fig.savefig(folder / f"{name}.png", dpi=300, bbox_inches="tight")
-    fig.savefig(folder / f"{name}.pdf", bbox_inches="tight")
-    plt.close(fig)
-
-
-def save(fig, folder, name):
-    """folder/name.png (300 dpi) and folder/name.pdf (vector), then close the figure."""
-    fig.savefig(folder / f"{name}.png", dpi=300, bbox_inches="tight")
-    fig.savefig(folder / f"{name}.pdf", bbox_inches="tight")
-    plt.close(fig)
-
 
 def titled(ax, letter, title):
     """Panel title '(a)  title' at the left edge of the axes."""

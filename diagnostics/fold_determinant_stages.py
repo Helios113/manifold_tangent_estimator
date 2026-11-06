@@ -32,7 +32,7 @@ def point_quantities(steps, x, JfB):
     frame), logvol (log volume per stage), steps (log volume each step adds),
     sign and logabs (slogdet of A), z (the code).
     """
-    h, J = x, JfB.double().cpu()
+    h, J = x.cpu(), JfB.double().cpu()
 
     sv = [torch.linalg.svdvals(J)]  # (n, k) per stage, grows per stage
     stepsv = []
@@ -41,7 +41,7 @@ def point_quantities(steps, x, JfB):
         Q = torch.linalg.qr(J)[0]  # orthonormal frame of the incoming tangent image
         S_s = jacobian(fn, h).double()
         # What step j alone does to that frame, with the accumulated anisotropy removed.
-        stepsv.append(torch.linalg.svdvals((S_s @ Q).cpu()))
+        stepsv.append(torch.linalg.svdvals(S_s @ Q))
         J = S_s @ J  # chain rule
         h = fn(h)  # advance the point
         sv.append(torch.linalg.svdvals(J))
@@ -136,7 +136,9 @@ def fold_determinant_stages(
         "the pushforward is square only when the latent dimension equals k"
     )
     net = load_net(p, cfg).to(dev)
-    steps = net.encoder_steps()
+    # Move network to CPU for jacobian computations to avoid device mismatch
+    net_cpu = net.to('cpu')
+    steps = net_cpu.encoder_steps()
     labels = ["input"] + [s[0] for s in steps]
     step_labels = [
         f"step {j + 1}: stage {j} -> stage {j + 1} ({labels[j + 1]})"

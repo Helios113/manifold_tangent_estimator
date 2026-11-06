@@ -11,7 +11,7 @@ import json, sys, tomllib
 from pathlib import Path
 import pandas as pd, torch
 from model import make_model
-from sphere import Sphere, EMBEDDINGS
+from sphere import MANIFOLDS, EMBEDDINGS
 from plots import plot_all, plot_loss
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"                                   # the network and the data of a run live here; saved weights are always CPU tensors
@@ -19,7 +19,8 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"                         
 OPTIMIZERS = {"adam": torch.optim.Adam, "sgd": torch.optim.SGD}              # SGD is plain: no momentum, no weight decay
 
 DEFAULTS = {
-    "intrinsic_dim": 2,                 # k of the k-sphere, which lives in R^(k+1)
+    "intrinsic_dim": 2,                 # k of the k-sphere, which lives in R^(k+1); for the torus, k=2 is the standard torus in R^3
+    "manifold": "sphere",               # key of sphere.MANIFOLDS: "sphere" or "torus"
     "embedding": "quadratic",           # key of sphere.EMBEDDINGS
     "ambient_dim": 10,
     "embedded_dim": 3,                  # latent dimension
@@ -227,7 +228,7 @@ if __name__ == "__main__":
         print(f"gpu: {torch.cuda.get_device_name()}, free VRAM {free / 2**30:.1f} of {total / 2**30:.1f} GiB", flush=True)
 
     gen = torch.Generator().manual_seed(cfg["data_seed"])
-    S = Sphere(cfg["intrinsic_dim"])
+    S = MANIFOLDS[cfg["manifold"]](cfg["intrinsic_dim"])
     emb = EMBEDDINGS[cfg["embedding"]](cfg["ambient_dim"], gen, in_dim=S.D)      # one fixed embedding
     X_val = S.embed_points(S.sample(cfg["n_val"], gen), emb).to(DEVICE)
 
